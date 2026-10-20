@@ -1,0 +1,67 @@
+name: Build Mush8 iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      BUNDLE_ID: com.indecentdad.mush8
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Verify Apple Silicon and disk space
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          df -h .
+
+      - name: Install build tools
+        run: |
+          brew install xcodegen rustup
+          echo "$(brew --prefix rustup)/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add aarch64-apple-ios --toolchain 1.98.1
+          cargo --version
+
+      - name: Retrieve privately stored game dumps
+        env:
+          GAME_ARCHIVE_URL: ${{ secrets.GAME_ARCHIVE_URL }}
+        run: |
+          if [ -z "$GAME_ARCHIVE_URL" ]; then
+            echo 'Missing GAME_ARCHIVE_URL secret. Supply a private HTTPS URL for a ZIP containing prod.keys, base.nsp and upd4-0-1.nsp.' >&2
+            exit 1
+          fi
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$RUNNER_TEMP/mush8-game-files.zip" "$GAME_ARCHIVE_URL"
+          unzip -q "$RUNNER_TEMP/mush8-game-files.zip" -d .
+          rm -f "$RUNNER_TEMP/mush8-game-files.zip"
+          for file in prod.keys base.nsp upd4-0-1.nsp; do
+            test -s "$file" || { echo "Missing game input: $file" >&2; exit 1; }
+          done
+          df -h .
+
+      - name: Compile unsigned IPA
+        run: |
+          ./make-ios.sh --ipa
+          test -s build/Mush8.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mush8-unsigned-iOS
+          path: build/Mush8.ipa
+          if-no-files-found: error
+          retention-days: 7
